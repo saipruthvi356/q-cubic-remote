@@ -5,7 +5,7 @@
 const N = window.QCRNet;
 const $ = (id) => document.getElementById(id);
 const STORE = 'qcr.pcs.v1';
-const QUALITY_LABEL = { fast: 'Fast', balanced: 'Balanced', sharp: 'Sharp' };
+const QUALITY_LABEL = { fast: 'Smooth', balanced: 'HD', sharp: 'Ultra' };
 
 // For local testing only: allow a relay override when the page runs on this computer.
 const brokers = (() => {
@@ -15,7 +15,7 @@ const brokers = (() => {
 })();
 
 let relays = [], pc = null, channel = null;
-let quality = 'fast';
+let quality = 'balanced';
 let attempt = 0;   // only the newest connection attempt may report a timeout
 
 // ---------- saved PCs ----------
@@ -176,8 +176,8 @@ function endView() {
 }
 
 // ---------- settings that stay on this phone ----------
-const PREFS = 'qcr.prefs.v1';
-const prefs = Object.assign({ control: 'mouse', view: 'fit', quality: 'fast', rotate: 'any', pad: null }, (() => {
+const PREFS = 'qcr.prefs.v2';
+const prefs = Object.assign({ control: 'mouse', view: 'auto', quality: 'balanced', rotate: 'any', pad: null }, (() => {
   try { return JSON.parse(localStorage.getItem(PREFS)) || {}; } catch (e) { return {}; }
 })());
 quality = prefs.quality;
@@ -201,8 +201,10 @@ function layout() {
   const W = stage.clientWidth, H = stage.clientHeight;
   const vw = video.videoWidth || 1600, vh = video.videoHeight || 900;
   let k;
-  if (prefs.view === 'fill') k = Math.max(W / vw, H / vh);
-  else if (prefs.view === 'original') k = 1 / (window.devicePixelRatio || 1);
+  // Auto: phone upright -> fill the height (slide sideways to see the rest); phone sideways -> whole screen
+  const mode = prefs.view === 'auto' ? (H > W ? 'fill' : 'fit') : prefs.view;
+  if (mode === 'fill') k = Math.max(W / vw, H / vh);
+  else if (mode === 'original') k = 1 / (window.devicePixelRatio || 1);
   else k = Math.min(W / vw, H / vh);
   const w = vw * k, h = vh * k;
   view.base = { x: (W - w) / 2, y: (H - h) / 2, w, h };
@@ -251,8 +253,12 @@ function toPc(cx, cy) {
 }
 
 // When zoomed in, follow the cursor so it never leaves the phone screen
+function canPan() {
+  return view.base.w * view.s > stage.clientWidth + 1 || view.base.h * view.s > stage.clientHeight + 1;
+}
+
 function keepCursorVisible() {
-  if (view.s <= 1.01) return;
+  if (!canPan()) return;
   const W = stage.clientWidth, H = stage.clientHeight, m = 48;
   const px = view.base.x + view.tx + cursor.x * view.base.w * view.s;
   const py = view.base.y + view.ty + cursor.y * view.base.h * view.s;
@@ -314,7 +320,7 @@ ov.addEventListener('touchmove', (e) => {
     const two = g.two, ratio = d / two.d0, dx = m.x - two.m0.x, dy = m.y - two.m0.y;
     if (!two.kind) {
       if (Math.abs(ratio - 1) > 0.08) two.kind = 'zoom';
-      else if (Math.hypot(dx, dy) > 12) two.kind = view.s > 1.01 ? 'pan' : 'scroll';
+      else if (Math.hypot(dx, dy) > 12) two.kind = canPan() && Math.abs(dx) > Math.abs(dy) ? 'pan' : (view.s > 1.01 ? 'pan' : 'scroll');
     }
     if (two.kind === 'zoom') {
       view.s = two.s0; view.tx = two.tx0 + dx; view.ty = two.ty0 + dy;
