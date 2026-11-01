@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0B1220">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Q-CUBIC Remote</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<!-- Q-CUBIC Remote - phone app. Copyright (c) 2026 Pruthvi. All rights reserved. -->
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #0B1220; color: #EAF2FF; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; overscroll-behavior: none; }
+  .page { min-height: 100%; display: none; flex-direction: column; gap: 18px; padding: 28px 22px; max-width: 480px; margin: 0 auto; }
+  .page.show { display: flex; }
+  h1 { margin: 0; font-size: 32px; } h1 span { color: #22D3EE; }
+  h2 { margin: 0; font-size: 20px; }
+  p { margin: 0; color: #C7D3E6; font-size: 16px; line-height: 1.45; }
+  label { font-size: 13px; color: #9FB0C8; text-transform: uppercase; letter-spacing: .06em; display: block; margin-bottom: 6px; }
+  input.field { width: 100%; font-size: 26px; letter-spacing: .12em; text-align: center; padding: 12px; border-radius: 14px; border: 2px solid #33415C; background: #121C2E; color: #EAF2FF; }
+  input.field.small { font-size: 18px; letter-spacing: 0; text-align: left; }
+  input.field:focus { outline: none; border-color: #22D3EE; }
+  .primary { min-height: 54px; border: 0; border-radius: 14px; background: #22D3EE; color: #0B1220; font-size: 18px; font-weight: 700; }
+  .primary:disabled { opacity: .5; }
+  .ghost { min-height: 48px; border-radius: 14px; border: 1px solid #33415C; background: transparent; color: #EAF2FF; font-size: 16px; }
+  .card { background: #121C2E; border: 1px solid #22304A; border-radius: 16px; padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
+  .card .grow { flex: 1; min-width: 0; }
+  .card .name { font-size: 18px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .id { font-size: 14px; color: #9FB0C8; }
+  .card button { min-height: 44px; padding: 0 14px; border-radius: 12px; font-size: 15px; }
+  .remove { border: 1px solid #33415C; background: transparent; color: #C7D3E6; }
+  .msg { min-height: 22px; color: #FCA5A5; font-size: 15px; }
+  .info { color: #9FB0C8; font-size: 14px; }
+  #view { position: fixed; inset: 0; display: none; flex-direction: column; background: #000; }
+  #stage { position: relative; flex: 1; overflow: hidden; touch-action: none; }
+  video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; pointer-events: none; }
+  #overlay { position: absolute; inset: 0; touch-action: none; }
+  #bar { display: flex; gap: 6px; padding: 8px; padding-bottom: max(8px, env(safe-area-inset-bottom)); background: #0B1220; overflow-x: auto; }
+  #bar button { flex: 0 0 auto; min-width: 54px; min-height: 46px; padding: 0 12px; border-radius: 10px; border: 1px solid #33415C; background: #121C2E; color: #EAF2FF; font-size: 15px; }
+  #bar button.on { background: #22D3EE; color: #0B1220; border-color: #22D3EE; }
+  #kb { position: absolute; left: -1000px; top: 0; width: 10px; height: 10px; opacity: 0; }
+  #toast { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: rgba(11,18,32,.9); color: #EAF2FF; padding: 8px 14px; border-radius: 999px; font-size: 14px; display: none; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<section class="page show" id="home">
+  <h1>Q-CUBIC <span>Remote</span></h1>
+  <h2>My PCs</h2>
+  <div id="pcList"></div>
+  <p id="emptyHint" class="info">No PC saved yet. Add your PC once with its ID and pairing code.</p>
+  <button class="primary" id="addBtn">Add a PC</button>
+  <div class="msg" id="homeMsg" role="status"></div>
+  <p class="info">Tap = click. Hold = right click. Drag = drag. Two fingers up or down = scroll.</p>
+</section>
+
+<section class="page" id="add">
+  <h1>Add a <span>PC</span></h1>
+  <p>Open Q-CUBIC Remote on your PC. Type the ID and pairing code it shows.</p>
+  <div><label for="pcId">PC ID</label><input class="field" id="pcId" inputmode="numeric" maxlength="11" placeholder="123 456 789" autocomplete="off"></div>
+  <div><label for="pcCode">Pairing code</label><input class="field" id="pcCode" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code"></div>
+  <div><label for="pcName">Name (optional)</label><input class="field small" id="pcName" maxlength="30" placeholder="Home PC" autocomplete="off"></div>
+  <button class="primary" id="pairBtn" disabled>Connect and save</button>
+  <button class="ghost" id="cancelAdd">Back</button>
+  <div class="msg" id="addMsg" role="status"></div>
+</section>
+
+<section id="view">
+  <div id="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <div id="overlay"></div>
+    <div id="toast"></div>
+  </div>
+  <div id="bar">
+    <button id="kbBtn">Keyboard</button>
+    <button id="rcBtn">Right click</button>
+    <button id="qBtn">Fast</button>
+    <button data-key="Enter">Enter</button>
+    <button data-key="Backspace">Delete</button>
+    <button data-key="Escape">Esc</button>
+    <button data-key="Win">Win</button>
+    <button data-key="Tab">Tab</button>
+    <button data-key="ArrowUp">Up</button>
+    <button data-key="ArrowDown">Down</button>
+    <button data-key="ArrowLeft">Left</button>
+    <button data-key="ArrowRight">Right</button>
+    <button id="fsBtn">Full screen</button>
+    <button id="endBtn">Disconnect</button>
+  </div>
+  <input id="kb" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+</section>
+
+<script src="qcr-net.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
