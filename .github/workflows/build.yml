@@ -54,6 +54,8 @@ jobs:
       - name: Build Windows app
         run: |
           set -e
+          pip install --quiet pillow
+          python3 tools/make-icons.py app
           cd app
           npm install --omit=dev --os=win32 --cpu=x64 --ignore-scripts --no-audit --no-fund
           cd ..
