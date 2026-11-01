@@ -1,0 +1,126 @@
+# Q-CUBIC Remote - builds the Windows app, the Android app and the phone web app.
+# Copyright (c) 2026 Pruthvi. All rights reserved.
+name: Build Q-CUBIC Remote
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['app/**', 'phone/**', 'build/**', 'tools/**', '.github/workflows/build.yml']
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: build
+  cancel-in-progress: true
+
+env:
+  ELECTRON_VERSION: 39.8.10
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make phone web app folder
+        run: |
+          pip install --quiet pillow
+          mkdir -p www
+          cp phone/* www/
+          cp app/qcr-net.js www/
+          python3 tools/make-icons.py www
+      - uses: actions/upload-artifact@v4
+        with: { name: www, path: www }
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: www }
+
+  pages:
+    needs: web
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: '${{ steps.deploy.outputs.page_url }}' }
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Build Windows app
+        run: |
+          set -e
+          cd app
+          npm install --omit=dev --os=win32 --cpu=x64 --ignore-scripts --no-audit --no-fund
+          cd ..
+          curl -sSLf -o electron.zip "https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/electron-v${ELECTRON_VERSION}-win32-x64.zip"
+          mkdir -p dist/QCubicRemote
+          unzip -q electron.zip -d dist/QCubicRemote
+          cd dist/QCubicRemote
+          mv electron.exe "Q-CUBIC Remote.exe"
+          rm -f resources/default_app.asar
+          find locales -type f ! -name 'en-US.pak' -delete
+          mkdir -p resources/app
+          cp -r ../../app/. resources/app/
+          rm -f resources/app/package-lock.json
+          cp "../../build/windows-readme.txt" "READ ME FIRST.txt"
+          cd ..
+          zip -qr -9 QCubicRemote-windows.zip QCubicRemote
+      - uses: actions/upload-artifact@v4
+        with: { name: windows, path: dist/QCubicRemote-windows.zip }
+
+  android:
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - uses: actions/download-artifact@v4
+        with: { name: www, path: www }
+      - name: Build Android app
+        run: |
+          set -e
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7
+          npx cap init "Q-CUBIC Remote" com.qcubic.remote --web-dir www
+          npx cap add android
+          # Our icon on the home screen
+          for d in android/app/src/main/res/mipmap-*; do
+            case "$d" in *anydpi*) continue;; esac
+            cp www/icon-192.png "$d/ic_launcher.png"
+            cp www/icon-192.png "$d/ic_launcher_round.png"
+            [ -f "$d/ic_launcher_foreground.png" ] && cp www/icon-192.png "$d/ic_launcher_foreground.png" || true
+          done
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+          mkdir -p ../dist
+          cp app/build/outputs/apk/debug/app-debug.apk ../dist/q-cubic-remote-android.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: android, path: dist/q-cubic-remote-android.apk }
+
+  release:
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: out, merge-multiple: true }
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest out/QCubicRemote-windows.zip out/q-cubic-remote-android.apk \
+            --title "Q-CUBIC Remote (latest)" \
+            --notes "Windows: download QCubicRemote-windows.zip, unzip, run Q-CUBIC Remote.exe. Phone: install q-cubic-remote-android.apk, or open https://saipruthvi356.github.io/q-cubic-remote/ in Chrome." \
+            --target "${{ github.sha }}"
