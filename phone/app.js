@@ -5,7 +5,6 @@
 const N = window.QCRNet;
 const $ = (id) => document.getElementById(id);
 const STORE = 'qcr.pcs.v1';
-const QUALITIES = ['fast', 'balanced', 'sharp'];
 const QUALITY_LABEL = { fast: 'Fast', balanced: 'Balanced', sharp: 'Sharp' };
 
 // For local testing only: allow a relay override when the page runs on this computer.
@@ -15,7 +14,7 @@ const brokers = (() => {
   return isLocal && p ? p.split(',') : N.BROKERS;
 })();
 
-let relays = [], pc = null, channel = null, rightNext = false;
+let relays = [], pc = null, channel = null;
 let quality = 'fast';
 let attempt = 0;   // only the newest connection attempt may report a timeout
 
@@ -145,7 +144,7 @@ async function answer(sdp, relay, tp, sid, key, kid, target, msgEl) {
   pc.onconnectionstatechange = () => {
     if (!pc) return;
     const s = pc.connectionState;
-    if (s === 'connected') { closeRelays(); msgEl.textContent = ''; show('view'); $('video').play().catch(() => {}); }
+    if (s === 'connected') { closeRelays(); msgEl.textContent = ''; enterView(); }
     if (s === 'failed') { endView(); fail(msgEl, 'Could not reach your PC on this network. Try Wi-Fi or mobile data instead.'); show(pairingPage(target)); }
     if (s === 'disconnected') toast('Connection unstable...');
   };
@@ -176,79 +175,266 @@ function endView() {
   show('home');
 }
 
-// ---------- controls ----------
+// ---------- settings that stay on this phone ----------
+const PREFS = 'qcr.prefs.v1';
+const prefs = Object.assign({ control: 'mouse', view: 'fit', quality: 'fast', rotate: 'any', pad: null }, (() => {
+  try { return JSON.parse(localStorage.getItem(PREFS)) || {}; } catch (e) { return {}; }
+})());
+quality = prefs.quality;
+function savePrefs() { try { localStorage.setItem(PREFS, JSON.stringify(prefs)); } catch (e) {} }
+
 function toast(text) {
   const t = $('toast'); t.textContent = text; t.style.display = 'block';
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.style.display = 'none'; }, 2000);
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.style.display = 'none'; }, 1800);
 }
 function send(ev) { if (channel && channel.readyState === 'open') channel.send(JSON.stringify(ev)); }
-function sendQuality() { send({ t: 'quality', v: quality }); $('qBtn').textContent = QUALITY_LABEL[quality]; }
+function sendQuality() { send({ t: 'quality', v: quality }); }
+function buzz(ms) { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} }
 
-function toScreen(clientX, clientY) {
-  const v = $('video'), r = $('stage').getBoundingClientRect();
-  const vw = v.videoWidth || 16, vh = v.videoHeight || 9;
-  const scale = Math.min(r.width / vw, r.height / vh);
-  const w = vw * scale, h = vh * scale;
-  const left = r.left + (r.width - w) / 2, top = r.top + (r.height - h) / 2;
-  return { x: Math.min(1, Math.max(0, (clientX - left) / w)), y: Math.min(1, Math.max(0, (clientY - top) / h)) };
+// ---------- the picture: size, zoom and pan ----------
+const view = { s: 1, tx: 0, ty: 0, base: { x: 0, y: 0, w: 1, h: 1 } };
+const MAX_ZOOM = 6;
+const stage = $('stage'), screenEl = $('screen'), video = $('video'), cursorEl = $('cursor');
+const cursor = { x: 0.5, y: 0.5 };
+
+function layout() {
+  const W = stage.clientWidth, H = stage.clientHeight;
+  const vw = video.videoWidth || 1600, vh = video.videoHeight || 900;
+  let k;
+  if (prefs.view === 'fill') k = Math.max(W / vw, H / vh);
+  else if (prefs.view === 'original') k = 1 / (window.devicePixelRatio || 1);
+  else k = Math.min(W / vw, H / vh);
+  const w = vw * k, h = vh * k;
+  view.base = { x: (W - w) / 2, y: (H - h) / 2, w, h };
+  screenEl.style.left = view.base.x + 'px';
+  screenEl.style.top = view.base.y + 'px';
+  screenEl.style.width = w + 'px';
+  screenEl.style.height = h + 'px';
+  applyView();
 }
 
-// Send drag moves at most once per screen frame.
-let pendingMove = null;
-function queueMove(pos) {
-  if (!pendingMove) requestAnimationFrame(() => { if (pendingMove) send({ t: 'move', ...pendingMove }); pendingMove = null; });
-  pendingMove = pos;
+function clampView() {
+  const W = stage.clientWidth, H = stage.clientHeight, b = view.base;
+  view.s = Math.min(MAX_ZOOM, Math.max(1, view.s));
+  const w = b.w * view.s, h = b.h * view.s;
+  view.tx = w <= W ? (W - w) / 2 - b.x : Math.min(-b.x, Math.max(W - b.x - w, view.tx));
+  view.ty = h <= H ? (H - h) / 2 - b.y : Math.min(-b.y, Math.max(H - b.y - h, view.ty));
 }
 
-const g = { start: null, last: null, dragging: false, held: false, timer: null, scrollY: null, multi: false };
+function applyView() {
+  clampView();
+  screenEl.style.transform = 'translate(' + view.tx + 'px,' + view.ty + 'px) scale(' + view.s + ')';
+  cursorEl.style.left = (cursor.x * 100) + '%';
+  cursorEl.style.top = (cursor.y * 100) + '%';
+  cursorEl.style.transform = 'scale(' + (1 / view.s) + ')';
+  const tag = $('zoomTag');
+  tag.style.display = view.s > 1.02 ? 'block' : 'none';
+  tag.textContent = view.s.toFixed(1) + 'x';
+}
+
+function zoomAt(newScale, lx, ly) {
+  const s0 = view.s, s1 = Math.min(MAX_ZOOM, Math.max(1, newScale));
+  view.tx = lx - view.base.x - (lx - view.base.x - view.tx) * (s1 / s0);
+  view.ty = ly - view.base.y - (ly - view.base.y - view.ty) * (s1 / s0);
+  view.s = s1;
+  applyView();
+}
+
+function resetZoom() { view.s = 1; view.tx = 0; view.ty = 0; layout(); }
+
+// Finger position on the phone -> 0..1 position on the PC screen
+function toPc(cx, cy) {
+  const r = stage.getBoundingClientRect();
+  const x = (cx - r.left - view.base.x - view.tx) / (view.base.w * view.s);
+  const y = (cy - r.top - view.base.y - view.ty) / (view.base.h * view.s);
+  return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+}
+
+// When zoomed in, follow the cursor so it never leaves the phone screen
+function keepCursorVisible() {
+  if (view.s <= 1.01) return;
+  const W = stage.clientWidth, H = stage.clientHeight, m = 48;
+  const px = view.base.x + view.tx + cursor.x * view.base.w * view.s;
+  const py = view.base.y + view.ty + cursor.y * view.base.h * view.s;
+  if (px < m) view.tx += m - px; else if (px > W - m) view.tx -= px - (W - m);
+  if (py < m) view.ty += m - py; else if (py > H - m) view.ty -= py - (H - m);
+  applyView();
+}
+
+let pendingMove = false;
+function sendCursor() {
+  if (pendingMove) return;
+  pendingMove = true;
+  requestAnimationFrame(() => { pendingMove = false; send({ t: 'move', x: cursor.x, y: cursor.y }); });
+}
+function at() { return { x: cursor.x, y: cursor.y }; }
+
+video.addEventListener('loadedmetadata', layout);
+video.addEventListener('resize', layout);
+window.addEventListener('resize', () => { if ($('view').style.display === 'flex') layout(); });
+
+// ---------- finger gestures on the picture ----------
+const SENS = 1.6;            // touchpad speed
+const HOLD_MS = 450;
+const g = { one: null, two: null, lastTwoEnd: 0 };
 const ov = $('overlay');
+
+function local(t) { const r = stage.getBoundingClientRect(); return { x: t.clientX - r.left, y: t.clientY - r.top }; }
+
 ov.addEventListener('touchstart', (e) => {
   e.preventDefault();
-  if (e.touches.length >= 2) {
-    clearTimeout(g.timer); g.multi = true;
-    if (g.dragging) { send({ t: 'up', b: 'left', ...g.last }); g.dragging = false; }
-    g.scrollY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+  const ts = e.targetTouches;
+  if (ts.length >= 2) {
+    if (g.one) { clearTimeout(g.one.timer); if (g.one.dragging) send({ t: 'up', b: 'left', ...g.one.pos }); g.one = null; }
+    const a = local(ts[0]), b = local(ts[1]);
+    g.two = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, m0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+      s0: view.s, tx0: view.tx, ty0: view.ty, kind: null, t0: Date.now(), wheel: 0 };
     return;
   }
-  const t = e.touches[0];
-  g.start = { cx: t.clientX, cy: t.clientY }; g.last = toScreen(t.clientX, t.clientY);
-  g.dragging = false; g.held = false; g.multi = false;
-  g.timer = setTimeout(() => { g.held = true; send({ t: 'click', b: 'right', ...g.last }); toast('Right click'); }, 550);
+  if (g.two) return;
+  const t = ts[0];
+  const one = { sx: t.clientX, sy: t.clientY, lx: t.clientX, ly: t.clientY, t0: Date.now(), moved: false, dragging: false, held: false };
+  if (prefs.control === 'touch') {
+    one.pos = toPc(t.clientX, t.clientY);
+    cursor.x = one.pos.x; cursor.y = one.pos.y; applyView();
+    one.timer = setTimeout(() => { one.held = true; buzz(25); send({ t: 'click', b: 'right', ...one.pos }); toast('Right click'); }, 550);
+  } else {
+    one.pos = at();
+    one.timer = setTimeout(() => { one.dragging = true; buzz(25); send({ t: 'down', b: 'left', ...at() }); toast('Drag'); }, HOLD_MS);
+  }
+  g.one = one;
 }, { passive: false });
 
 ov.addEventListener('touchmove', (e) => {
   e.preventDefault();
-  if (e.touches.length >= 2 && g.scrollY !== null) {
-    const y = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-    const steps = Math.trunc((g.scrollY - y) / 40);
-    if (steps) { send({ t: 'wheel', d: -steps }); g.scrollY -= steps * 40; }
+  const ts = e.targetTouches;
+  if (g.two && ts.length >= 2) {
+    const a = local(ts[0]), b = local(ts[1]);
+    const d = Math.hypot(a.x - b.x, a.y - b.y), m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const two = g.two, ratio = d / two.d0, dx = m.x - two.m0.x, dy = m.y - two.m0.y;
+    if (!two.kind) {
+      if (Math.abs(ratio - 1) > 0.08) two.kind = 'zoom';
+      else if (Math.hypot(dx, dy) > 12) two.kind = view.s > 1.01 ? 'pan' : 'scroll';
+    }
+    if (two.kind === 'zoom') {
+      view.s = two.s0; view.tx = two.tx0 + dx; view.ty = two.ty0 + dy;
+      zoomAt(two.s0 * ratio, m.x, m.y);
+    } else if (two.kind === 'pan') {
+      view.tx = two.tx0 + dx; view.ty = two.ty0 + dy; applyView();
+    } else if (two.kind === 'scroll') {
+      const steps = Math.trunc((dy - two.wheel * 36) / 36);
+      if (steps) { send({ t: 'wheel', d: steps }); two.wheel += steps; }
+    }
     return;
   }
-  if (g.multi || g.held || !g.start) return;
-  const t = e.touches[0];
-  if (!g.dragging && Math.hypot(t.clientX - g.start.cx, t.clientY - g.start.cy) > 12) {
-    clearTimeout(g.timer); g.dragging = true; send({ t: 'down', b: 'left', ...g.last });
+  const one = g.one;
+  if (!one || ts.length !== 1) return;
+  const t = ts[0];
+  if (!one.moved && Math.hypot(t.clientX - one.sx, t.clientY - one.sy) > 8) {
+    one.moved = true;
+    if (prefs.control === 'touch' && !one.held) { clearTimeout(one.timer); one.dragging = true; send({ t: 'down', b: 'left', ...one.pos }); }
+    if (prefs.control === 'mouse' && !one.dragging) clearTimeout(one.timer);
   }
-  if (g.dragging) { g.last = toScreen(t.clientX, t.clientY); queueMove(g.last); }
+  if (prefs.control === 'touch') {
+    if (one.dragging) { one.pos = toPc(t.clientX, t.clientY); cursor.x = one.pos.x; cursor.y = one.pos.y; applyView(); sendCursor(); }
+  } else {
+    const ddx = (t.clientX - one.lx) * SENS / (view.base.w * view.s);
+    const ddy = (t.clientY - one.ly) * SENS / (view.base.h * view.s);
+    cursor.x = Math.min(1, Math.max(0, cursor.x + ddx));
+    cursor.y = Math.min(1, Math.max(0, cursor.y + ddy));
+    one.pos = at();
+    applyView(); keepCursorVisible(); sendCursor();
+  }
+  one.lx = t.clientX; one.ly = t.clientY;
 }, { passive: false });
 
-ov.addEventListener('touchend', (e) => {
+function touchEnd(e) {
   e.preventDefault();
-  if (e.touches.length > 0) return;
-  clearTimeout(g.timer);
-  if (g.multi) { g.multi = false; g.scrollY = null; return; }
-  if (g.held || !g.start) return;
-  if (g.dragging) send({ t: 'up', b: 'left', ...g.last });
-  else { send({ t: 'click', b: rightNext ? 'right' : 'left', ...g.last }); if (rightNext) { rightNext = false; $('rcBtn').classList.remove('on'); } }
-  g.start = null; g.dragging = false;
+  const left = e.targetTouches.length;
+  if (g.two) {
+    if (left === 0) {
+      const two = g.two;
+      if (!two.kind && Date.now() - two.t0 < 300) {   // two-finger tap = right click
+        const pos = prefs.control === 'touch' ? toPc(stage.getBoundingClientRect().left + two.m0.x, stage.getBoundingClientRect().top + two.m0.y) : at();
+        send({ t: 'click', b: 'right', ...pos }); buzz(20); toast('Right click');
+      }
+      g.two = null;
+    }
+    return;
+  }
+  const one = g.one;
+  if (!one || left > 0) return;
+  clearTimeout(one.timer);
+  if (one.dragging) send({ t: 'up', b: 'left', ...one.pos });
+  else if (!one.moved && !one.held && Date.now() - one.t0 < 400) send({ t: 'click', b: 'left', ...one.pos });
+  g.one = null;
+}
+ov.addEventListener('touchend', touchEnd, { passive: false });
+ov.addEventListener('touchcancel', touchEnd, { passive: false });
+
+// Mouse and wheel (when testing from a computer browser)
+ov.addEventListener('mousedown', (e) => { const p = toPc(e.clientX, e.clientY); cursor.x = p.x; cursor.y = p.y; applyView(); send({ t: 'down', b: e.button === 2 ? 'right' : 'left', ...p }); });
+ov.addEventListener('mousemove', (e) => { if (e.buttons) { const p = toPc(e.clientX, e.clientY); cursor.x = p.x; cursor.y = p.y; applyView(); sendCursor(); } });
+ov.addEventListener('mouseup', (e) => send({ t: 'up', b: e.button === 2 ? 'right' : 'left', ...toPc(e.clientX, e.clientY) }));
+ov.addEventListener('contextmenu', (e) => e.preventDefault());
+ov.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (e.ctrlKey) { const l = local(e); zoomAt(view.s * (e.deltaY < 0 ? 1.15 : 1 / 1.15), l.x, l.y); }
+  else send({ t: 'wheel', d: e.deltaY > 0 ? -1 : 1 });
 }, { passive: false });
 
-ov.addEventListener('mousedown', (e) => send({ t: 'down', b: e.button === 2 ? 'right' : 'left', ...toScreen(e.clientX, e.clientY) }));
-ov.addEventListener('mousemove', (e) => { if (e.buttons) queueMove(toScreen(e.clientX, e.clientY)); });
-ov.addEventListener('mouseup', (e) => send({ t: 'up', b: e.button === 2 ? 'right' : 'left', ...toScreen(e.clientX, e.clientY) }));
-ov.addEventListener('contextmenu', (e) => e.preventDefault());
-ov.addEventListener('wheel', (e) => { e.preventDefault(); send({ t: 'wheel', d: e.deltaY > 0 ? -1 : 1 }); }, { passive: false });
+// ---------- the floating mouse pad ----------
+const pad = $('pad');
+function placePad() {
+  const W = stage.clientWidth, H = stage.clientHeight;
+  const pw = pad.offsetWidth || 190, ph = pad.offsetHeight || 140;
+  const p = prefs.pad || { x: (W - pw) / 2 / W, y: (H - ph - 24) / H };
+  pad.style.left = Math.min(W - pw, Math.max(0, p.x * W)) + 'px';
+  pad.style.top = Math.min(H - ph, Math.max(0, p.y * H)) + 'px';
+}
+window.addEventListener('resize', placePad);
 
+function holdButton(el, b) {
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); el.setPointerCapture(e.pointerId);
+    el.classList.add('down'); buzz(12); send({ t: 'down', b, ...at() });
+  });
+  const up = (e) => { if (!el.classList.contains('down')) return; el.classList.remove('down'); send({ t: 'up', b, ...at() }); };
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+}
+holdButton($('padL'), 'left');
+holdButton($('padR'), 'right');
+
+(() => {
+  const wheel = $('padWheel');
+  let y0 = null, sent = 0;
+  wheel.addEventListener('pointerdown', (e) => { e.preventDefault(); wheel.setPointerCapture(e.pointerId); y0 = e.clientY; sent = 0; });
+  wheel.addEventListener('pointermove', (e) => {
+    if (y0 === null) return;
+    const steps = Math.trunc((y0 - e.clientY) / 16) - sent;
+    if (steps) { send({ t: 'wheel', d: steps }); sent += steps; buzz(5); }
+  });
+  const end = () => { y0 = null; };
+  wheel.addEventListener('pointerup', end);
+  wheel.addEventListener('pointercancel', end);
+
+  const grip = $('padMove');
+  let start = null;
+  grip.addEventListener('pointerdown', (e) => { e.preventDefault(); grip.setPointerCapture(e.pointerId); start = { x: e.clientX, y: e.clientY, l: pad.offsetLeft, t: pad.offsetTop }; });
+  grip.addEventListener('pointermove', (e) => {
+    if (!start) return;
+    const W = stage.clientWidth, H = stage.clientHeight;
+    const l = Math.min(W - pad.offsetWidth, Math.max(0, start.l + e.clientX - start.x));
+    const t = Math.min(H - pad.offsetHeight, Math.max(0, start.t + e.clientY - start.y));
+    pad.style.left = l + 'px'; pad.style.top = t + 'px';
+  });
+  const done = () => { if (!start) return; start = null; prefs.pad = { x: pad.offsetLeft / stage.clientWidth, y: pad.offsetTop / stage.clientHeight }; savePrefs(); };
+  grip.addEventListener('pointerup', done);
+  grip.addEventListener('pointercancel', done);
+})();
+
+// ---------- keyboard ----------
 const kb = $('kb');
 const SENTINEL = ' ';
 function resetKb() { kb.value = SENTINEL; try { kb.setSelectionRange(1, 1); } catch (e) {} }
@@ -261,11 +447,51 @@ kb.addEventListener('input', () => {
 });
 kb.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); send({ t: 'key', k: 'Enter' }); } });
 
-$('rcBtn').onclick = () => { rightNext = !rightNext; $('rcBtn').classList.toggle('on', rightNext); if (rightNext) toast('Next tap is a right click'); };
-$('qBtn').onclick = () => { quality = QUALITIES[(QUALITIES.indexOf(quality) + 1) % QUALITIES.length]; sendQuality(); toast('Quality: ' + QUALITY_LABEL[quality]); };
-document.querySelectorAll('#bar [data-key]').forEach((b) => { b.onclick = () => send({ t: 'key', k: b.dataset.key }); });
-$('fsBtn').onclick = () => { const el = document.documentElement; (document.fullscreenElement ? document.exitFullscreen() : el.requestFullscreen()).catch(() => {}); };
-$('endBtn').onclick = () => endView();
+// ---------- side buttons and menu ----------
+function setControl(c) {
+  prefs.control = c; savePrefs();
+  $('view').classList.toggle('mouse', c === 'mouse');
+  $('modeBtn').classList.toggle('on', c === 'mouse');
+  markMenu();
+  requestAnimationFrame(placePad);
+}
+function markMenu() {
+  document.querySelectorAll('#menu [data-control]').forEach((b) => b.classList.toggle('on', b.dataset.control === prefs.control));
+  document.querySelectorAll('#menu [data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === prefs.view));
+  document.querySelectorAll('#menu [data-quality]').forEach((b) => b.classList.toggle('on', b.dataset.quality === quality));
+  document.querySelectorAll('#menu [data-rotate]').forEach((b) => b.classList.toggle('on', b.dataset.rotate === prefs.rotate));
+}
+async function setRotate(r) {
+  prefs.rotate = r; savePrefs(); markMenu();
+  try {
+    if (r === 'any') { screen.orientation.unlock(); return; }
+    if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+    await screen.orientation.lock(r);
+  } catch (e) { toast('Turn your phone to rotate'); }
+}
+
+$('modeBtn').onclick = () => { setControl(prefs.control === 'mouse' ? 'touch' : 'mouse'); toast(prefs.control === 'mouse' ? 'Mouse mode: move the pointer like a touchpad' : 'Touch mode: tap where you want to click'); };
+$('fitBtn').onclick = () => { resetZoom(); toast('Zoom reset'); };
+$('hideBtn').onclick = () => { const c = $('view').classList.toggle('clean'); $('hideBtn').classList.toggle('on', c); };
+$('menuBtn').onclick = () => { markMenu(); $('menu').classList.toggle('open'); };
+$('closeMenu').onclick = () => $('menu').classList.remove('open');
+document.querySelectorAll('#menu [data-control]').forEach((b) => { b.onclick = () => setControl(b.dataset.control); });
+document.querySelectorAll('#menu [data-view]').forEach((b) => { b.onclick = () => { prefs.view = b.dataset.view; savePrefs(); resetZoom(); markMenu(); }; });
+document.querySelectorAll('#menu [data-quality]').forEach((b) => { b.onclick = () => { quality = prefs.quality = b.dataset.quality; savePrefs(); sendQuality(); markMenu(); toast('Quality: ' + QUALITY_LABEL[quality]); }; });
+document.querySelectorAll('#menu [data-rotate]').forEach((b) => { b.onclick = () => setRotate(b.dataset.rotate); });
+document.querySelectorAll('#menu [data-key]').forEach((b) => { b.onclick = () => send({ t: 'key', k: b.dataset.key }); });
+document.querySelectorAll('#menu [data-combo]').forEach((b) => { b.onclick = () => send({ t: 'combo', keys: b.dataset.combo.split(',') }); });
+$('fsBtn').onclick = () => { const el = document.documentElement; (document.fullscreenElement ? document.exitFullscreen() : el.requestFullscreen()).catch(() => toast('Full screen not available here')); };
+$('endBtn').onclick = () => { $('menu').classList.remove('open'); endView(); };
+
+function enterView() {
+  show('view');
+  setControl(prefs.control);
+  resetZoom();
+  placePad();
+  if (prefs.rotate !== 'any') setRotate(prefs.rotate);
+  video.play().catch(() => {});
+}
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
