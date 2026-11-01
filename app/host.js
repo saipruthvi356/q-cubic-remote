@@ -5,10 +5,11 @@
 const N = window.QCRNet;
 const $ = (id) => document.getElementById(id);
 
+// fast = Smooth, balanced = HD (default), sharp = Ultra
 const QUALITY = {
-  fast:     { maxWidth: 1280, fps: 30, bitrate: 2500000, pref: 'maintain-framerate' },
-  balanced: { maxWidth: 1600, fps: 30, bitrate: 5000000, pref: 'balanced' },
-  sharp:    { maxWidth: 1920, fps: 30, bitrate: 10000000, pref: 'maintain-resolution' },
+  fast:     { maxWidth: 1280, fps: 60, bitrate: 4000000,  pref: 'maintain-framerate',  hint: 'motion' },
+  balanced: { maxWidth: 1920, fps: 30, bitrate: 8000000,  pref: 'balanced',            hint: 'detail' },
+  sharp:    { maxWidth: 2560, fps: 30, bitrate: 16000000, pref: 'maintain-resolution', hint: 'text' },
 };
 const CODE_LIFETIME_MS = 10 * 60 * 1000;
 const MAX_FAILS = 5;
@@ -46,7 +47,8 @@ function stopSession() {
 
 async function applyQuality(name) {
   if (!session || !session.sender) return;
-  const q = QUALITY[name] || QUALITY.fast;
+  const q = QUALITY[name] || QUALITY.balanced;
+  try { session.track.contentHint = q.hint; } catch (e) {}
   const s = session.track.getSettings();
   const scale = s.width && s.width > q.maxWidth ? s.width / q.maxWidth : 1;
   try {
@@ -81,10 +83,10 @@ async function startSession(sid, key, relay, hello, pairing) {
   session = s;
   setStatus('Phone found. Starting screen...', true);
   try {
-    s.stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30, max: 30 } }, audio: false });
+    s.stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 60, max: 60 } }, audio: false });
   } catch (e) { setStatus('Could not capture the screen: ' + e.message, false); session = null; return; }
   s.track = s.stream.getVideoTracks()[0];
-  s.track.contentHint = 'motion';
+  s.track.contentHint = 'detail';
 
   const pc = new RTCPeerConnection({ iceServers: N.ICE_SERVERS });
   s.pc = pc;
@@ -105,14 +107,14 @@ async function startSession(sid, key, relay, hello, pairing) {
   };
   ch.onmessage = (m) => {
     let ev; try { ev = JSON.parse(m.data); } catch (e) { return; }
-    if (ev.t === 'quality') { applyQuality(ev.v); return; }
+    if (ev.t === 'quality') { s.quality = ev.v; applyQuality(ev.v); return; }
     window.qcr.sendInput(ev);
   };
 
   pc.onconnectionstatechange = () => {
     if (session !== s) return;
     const st = pc.connectionState;
-    if (st === 'connected') { setStatus('Connected to ' + s.phoneName + '.', true); applyQuality('fast'); }
+    if (st === 'connected') { setStatus('Connected to ' + s.phoneName + '.', true); applyQuality(s.quality || 'balanced'); }
     if (st === 'failed') { setStatus('Could not connect to the phone on this network.', false); stopSession(); }
     if (st === 'disconnected' || st === 'closed') { setStatus('Phone disconnected. Waiting...', false); }
   };
