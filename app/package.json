@@ -1,0 +1,16 @@
+{
+  "name": "qcubic-remote",
+  "productName": "Q-CUBIC Remote",
+  "version": "0.2.0",
+  "description": "Q-CUBIC Remote - control your home PC from your phone",
+  "main": "main.js",
+  "author": "Pruthvi",
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "koffi": "3.3.6"
+  },
+  "devDependencies": {
+    "electron": "39.8.10"
+  }
+}
