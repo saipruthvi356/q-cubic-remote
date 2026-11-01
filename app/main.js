@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Pruthvi. All rights reserved.
 'use strict';
 
-const { app, BrowserWindow, ipcMain, session, desktopCapturer, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, session, desktopCapturer, screen, Tray, Menu, nativeImage, powerSaveBlocker } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -10,6 +10,9 @@ const crypto = require('crypto');
 const input = require('./input');
 
 let win = null;
+let tray = null;
+let quitting = false;
+const startHidden = process.argv.includes('--hidden');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -40,6 +43,8 @@ function createWindow() {
   win = new BrowserWindow({
     width: 460,
     height: 640,
+    show: false,
+    icon: iconImage(64),
     resizable: false,
     title: 'Q-CUBIC Remote',
     autoHideMenuBar: true,
@@ -51,7 +56,36 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, 'host.html'));
-  win.on('closed', () => { win = null; app.quit(); });
+  win.once('ready-to-show', () => { if (!startHidden) win.show(); });
+  // Closing the window keeps Q-CUBIC running in the tray, so your phone can still connect.
+  win.on('close', (e) => { if (!quitting) { e.preventDefault(); win.hide(); } });
+  win.on('closed', () => { win = null; });
+}
+
+function iconImage(size) {
+  const img = nativeImage.createFromPath(path.join(__dirname, 'icon-192.png'));
+  return img.isEmpty() ? img : img.resize({ width: size, height: size });
+}
+
+// Start with Windows (after you log in), hidden in the tray.
+function setAutoStart(on) {
+  if (!app.isPackaged && process.platform !== 'win32') return;
+  app.setLoginItemSettings({ openAtLogin: on, args: ['--hidden'] });
+}
+function autoStartOn() { return app.getLoginItemSettings({ args: ['--hidden'] }).openAtLogin; }
+
+function createTray() {
+  tray = new Tray(iconImage(16));
+  tray.setToolTip('Q-CUBIC Remote - ready for your phone');
+  const build = () => Menu.buildFromTemplate([
+    { label: 'Show Q-CUBIC Remote', click: () => { win.show(); win.focus(); } },
+    { label: 'Start with Windows', type: 'checkbox', checked: autoStartOn(), click: (i) => { setAutoStart(i.checked); config.autoStart = i.checked; saveConfig(config); } },
+    { type: 'separator' },
+    { label: 'Quit (phone can no longer connect)', click: () => { quitting = true; app.quit(); } },
+  ]);
+  tray.setContextMenu(build());
+  tray.on('click', () => { win.show(); win.focus(); });
+  tray.on('right-click', () => tray.setContextMenu(build()));
 }
 
 app.whenReady().then(() => {
@@ -88,6 +122,13 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+  createTray();
+  if (config.autoStart !== false) setAutoStart(true);    // on by default
+  powerSaveBlocker.start('prevent-app-suspension');      // keep the PC reachable
 });
 
-app.on('window-all-closed', () => app.quit());
+app.on('second-instance', () => { if (win) { win.show(); win.focus(); } });
+app.on('before-quit', () => { quitting = true; });
+
+// Keep running in the tray when the window is closed.
+app.on('window-all-closed', () => {});
