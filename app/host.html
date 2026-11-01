@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src wss: ws:">
+<title>Q-CUBIC Remote</title>
+<style>
+  body { margin: 0; background: #0B1220; color: #EAF2FF; font-family: 'Segoe UI', system-ui, sans-serif; user-select: none; }
+  main { padding: 24px 28px; display: flex; flex-direction: column; gap: 14px; }
+  h1 { margin: 0; font-size: 26px; } h1 span { color: #22D3EE; }
+  .label { font-size: 12px; color: #9FB0C8; text-transform: uppercase; letter-spacing: .06em; }
+  .big { font-size: 38px; font-weight: 700; letter-spacing: .08em; font-variant-numeric: tabular-nums; user-select: text; }
+  .code { color: #22D3EE; letter-spacing: .18em; }
+  .box { background: #121C2E; border: 1px solid #22304A; border-radius: 14px; padding: 14px 18px; display: flex; flex-direction: column; gap: 6px; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  button { min-height: 36px; padding: 0 14px; border-radius: 10px; border: 1px solid #33415C; background: #1A2640; color: #EAF2FF; font-size: 14px; cursor: pointer; }
+  button:hover { background: #22304A; }
+  #status { font-size: 15px; color: #C7D3E6; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #9FB0C8; margin-right: 8px; }
+  .dot.on { background: #4ADE80; }
+  small { color: #9FB0C8; font-size: 12px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Q-CUBIC <span>Remote</span></h1>
+  <div class="box">
+    <div class="label">This PC's ID</div>
+    <div class="big" id="deviceId">--- --- ---</div>
+  </div>
+  <div class="box">
+    <div class="row"><div class="label">Pairing code (for a new phone)</div><button id="newCode">New code</button></div>
+    <div class="big code" id="code">------</div>
+    <small id="codeHint">Valid for 10 minutes. Used once.</small>
+  </div>
+  <div class="box">
+    <div class="row"><div class="label">Saved phones</div><button id="clearPhones">Remove all</button></div>
+    <div id="phones">None yet</div>
+  </div>
+  <div class="box">
+    <div class="label">Status</div>
+    <div><span class="dot" id="dot"></span><span id="status">Starting...</span></div>
+    <small id="relay">Connecting to the internet relay...</small>
+  </div>
+  <small>Works from any network. Keep this window open. The screen goes straight to your phone, encrypted.</small>
+</main>
+<script src="qcr-net.js"></script>
+<script src="host.js"></script>
+</body>
+</html>
